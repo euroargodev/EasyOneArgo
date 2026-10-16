@@ -11,14 +11,15 @@
 %         - 'param_name' value is not case sensitive
 %   no mandatory input parameters
 %   possible input parameters:
-%      inputDataDir          : top directory of input NetCDF files
-%      inputDataDoi          : DOI of the input data set (Argo monthly snapshot)
-%      csvOutputDir          : directory to store the CSV output data sets
-%      logDir                : directory to store the log file
-%      xmlReportDir          : directory to store the XML report
-%      xmlReportName         : file name of the XML report
-%      generateOutputMatFlag : flag to generate MAT files
-%      matOutputDir          : directory to store the MAT output data set
+%      inputDataDir            : top directory of input NetCDF files
+%      inputMinMaxDir          : directory of min/max test csv files
+%      inputDataDoi            : DOI of the input data set (Argo monthly snapshot)
+%      csvOutputDir            : directory to store the CSV output data sets
+%      logDir                  : directory to store the log file
+%      xmlReportDir            : directory to store the XML report
+%      xmlReportName           : file name of the XML report
+%      generateOutputAuditFlag : flag to generate output audit files
+%      auditOutputDir          : output audit files directory
 %
 % OUTPUT PARAMETERS :
 %
@@ -55,6 +56,37 @@
 %                             one)
 %   10/15/2025 - RNU - V 1.7: - use of mono-cycle profile files as input
 %                             - remove multi sessions mode
+%   10/24/2025 - RNU - V 1.8: in the EasyOneArgoTSLite dataset: provide, in CSV
+%                             output files, all the pressure levels of the
+%                             vertical grid (from 2dbar down to the deepest
+%                             "useful" level) even when there is no interpolated
+%                             value.
+%   11/17/2025 - RNU - V 1.9: in the EasyOneArgoTSLite dataset: bug when looking
+%                             for the deepest "useful" level when all the
+%                             pressure levels of the vertical grid are fill.
+%   04/27/2026 - RNU - V 1.10: updates coming from what we've done in
+%                              EasyOneArgoBGC:
+%                              - exclude profiles detected by min/max test
+%                              - improve pressure increasing test (in PTS
+%                              interpolation on the vertical grid)
+%                              - remove DENSITY_INVERSION_THRESHOLD test (in PTS
+%                              interpolation on the vertical grid)
+%                              - update CSV headers to make them more readable.
+%   04/29/2026 - RNU - V 1.11: - set profile longitudes in the [-180; 180[
+%                              interval
+%                              - added a 'maximum_pressure_of_good_data' column
+%                              in the index files (with the CSV profile deepest
+%                              level).
+%   07/07/2026 - RNU - V 1.12: - 'generateOutputMatFlag' replaced by
+%                              'generateOutputAuditFlag' and 'matOutputDir'
+%                              replaced by 'auditOutputDir'.
+%                              - typo corrected in report file.
+%                              - new interpolation scheme for EasyOneArgoTSLite
+%                              (with constrained extrapolation).
+%                              - fixed a bug on removing EasyOneArgoTSLite levels
+%                              below the deepest useful level.
+%                              - latitude and longitude values set on 5 decimal
+%                              digits.
 % ------------------------------------------------------------------------------
 function generate_easy_one_argo_core(varargin)
 
@@ -64,7 +96,16 @@ function generate_easy_one_argo_core(varargin)
 % top directory of input NetCDF profile files
 % (can be one directory with all profile files to process or top directory
 % of the DAC name directories (as in the GDAC))
-DIR_INPUT_NC_FILES = 'C:\Users\jprannou\_DATA\ONE_ARGO\IN\mini\';
+DIR_INPUT_NC_FILES = 'C:\Users\jprannou\_DATA\ONE_ARGO\IN\mono_mini\';
+
+% directory of min/max test excluded profiles
+% 3 files are expected:
+%   - drift_latest_exclusion.csv
+%   - drift_latest_new.csv
+%   - drift_latest_previous_reports.csv
+% in /home/oo26/coriolis/co05/co0508/etc/Report_ObjectiveAnalysisWarning/csv_drift 
+% or https://data-argo.ifremer.fr/etc/Report_ObjectiveAnalysisWarning/csv_drift/
+DIR_INPUT_MIN_MAX_CSV_FILES = 'C:\Users\jprannou\_DATA\ONE_ARGO_BGC\IN\min_max_csv\';
 
 % DOI of the reference input data set
 INPUT_DATA_DOI = 'http://doi.org/10.17882/42182#114627';
@@ -78,11 +119,11 @@ DIR_LOG_FILE = 'C:\Users\jprannou\_RNU\DecArgo_soft\work\log';
 % directory to store the xml report
 DIR_XML_FILE = 'C:\Users\jprannou\_RNU\DecArgo_soft\work\xml\';
 
-% generate output MAT files
-GENERATE_OUTPUT_MAT_FLAG = 0;
+% generate output audit files
+GENERATE_OUTPUT_AUDIT_FLAG = 0;
 
-% top directory of output MAT files
-DIR_OUTPUT_MAT_FILES = 'C:\Users\jprannou\_DATA\ONE_ARGO\OUT\';
+% top directory of output audit files
+DIR_OUTPUT_AUDIT_FILES = 'C:\Users\jprannou\_DATA\ONE_ARGO\OUT\';
 
 % CONFIGURATION - END
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -93,7 +134,7 @@ g_cogeoac_nbFilesToProcess = -1;
 
 % program version
 global g_cogeoac_generateEasyOneArgoCoreVersion;
-g_cogeoac_generateEasyOneArgoCoreVersion = '1.7';
+g_cogeoac_generateEasyOneArgoCoreVersion = '1.12';
 
 % berbose mode (for additionnal information on ignored data)
 global g_cogeoac_verboseMode;
@@ -113,14 +154,15 @@ g_cogeoac_nbProfToAllocate = 2500;
 
 % input parameters
 global g_cogeoac_dirInputNcFiles;
+global g_cogeoac_dirInputMinMaxFiles;
 global g_cogeoac_inputDataDoi;
 global g_cogeoac_dirOutputCsvFiles;
 global g_cogeoac_dirLogFile;
 global g_cogeoac_dirOutputXmlFile;
 global g_cogeoac_xmlReportFileName;
 global g_cogeoac_logFilePathName;
-global g_cogeoac_generateOutputMatFlag;
-global g_cogeoac_dirOutputMatFiles;
+global g_cogeoac_generateOutputAuditFlag;
+global g_cogeoac_dirOutputAuditFiles;
 
 % store DAC from input directories
 global g_cogeoac_dacName;
@@ -139,6 +181,8 @@ g_cogeoac_reportXmlData = [];
 % date of the run
 global g_cogeoac_nowUtc;
 g_cogeoac_nowUtc = now_utc;
+% g_cogeoac_nowUtc = datenum('20260420', 'yyyymmdd') % for comparison of 2 run results
+
 global g_cogeoac_nowUtcStr;
 g_cogeoac_nowUtcStr = datestr(g_cogeoac_nowUtc, 'yyyy-mm-ddTHH:MM:SSZ');
 
@@ -151,61 +195,70 @@ logFileName = [];
 status = 'nok';
 try
 
-% startTime
-ticStartTime = tic;
+   % startTime
+   ticStartTime = tic;
 
-% store the start time of the run
-currentTime = datestr(g_cogeoac_nowUtc, 'yyyymmddTHHMMSSZ');
+   % store the start time of the run
+   currentTime = datestr(g_cogeoac_nowUtc, 'yyyymmddTHHMMSSZ');
 
-% init the XML report
-init_xml_report(currentTime);
+   % init the XML report
+   init_xml_report(currentTime);
 
-% get input parameters
-[inputError] = parse_input_param(varargin);
+   % get input parameters
+   [inputError] = parse_input_param(varargin);
 
-if (inputError == 0)
+   if (inputError == 0)
 
-   % set parameter default values
-   if (isempty(g_cogeoac_dirInputNcFiles))
-      g_cogeoac_dirInputNcFiles = DIR_INPUT_NC_FILES;
-   end
-   if (isempty(g_cogeoac_inputDataDoi))
-      g_cogeoac_inputDataDoi = INPUT_DATA_DOI;
-   end
-   if (isempty(g_cogeoac_dirOutputCsvFiles))
-      g_cogeoac_dirOutputCsvFiles = DIR_OUTPUT_CSV_FILES;
-   end
-   if (isempty(g_cogeoac_dirLogFile))
-      g_cogeoac_dirLogFile = DIR_LOG_FILE;
-   end
-   if (isempty(g_cogeoac_dirOutputXmlFile))
+      % set parameter default values
+      if (isempty(g_cogeoac_dirInputNcFiles))
+         g_cogeoac_dirInputNcFiles = DIR_INPUT_NC_FILES;
+      end
+      if (isempty(g_cogeoac_dirInputMinMaxFiles))
+         g_cogeoac_dirInputMinMaxFiles = DIR_INPUT_MIN_MAX_CSV_FILES;
+      end
+      if (isempty(g_cogeoac_inputDataDoi))
+         g_cogeoac_inputDataDoi = INPUT_DATA_DOI;
+      end
+      if (isempty(g_cogeoac_dirOutputCsvFiles))
+         g_cogeoac_dirOutputCsvFiles = DIR_OUTPUT_CSV_FILES;
+      end
+      if (isempty(g_cogeoac_dirLogFile))
+         g_cogeoac_dirLogFile = DIR_LOG_FILE;
+      end
+      if (isempty(g_cogeoac_dirOutputXmlFile))
+         g_cogeoac_dirOutputXmlFile = DIR_XML_FILE;
+      end
+      if (isempty(g_cogeoac_generateOutputAuditFlag))
+         g_cogeoac_generateOutputAuditFlag = GENERATE_OUTPUT_AUDIT_FLAG;
+      end
+      if (isempty(g_cogeoac_dirOutputAuditFiles))
+         g_cogeoac_dirOutputAuditFiles = DIR_OUTPUT_AUDIT_FILES;
+      end
+
+      % log file creation
+      if (~isempty(g_cogeoac_xmlReportFileName))
+         logFileName = [g_cogeoac_dirLogFile '/generate_easy_one_argo_core_' g_cogeoac_xmlReportFileName(10:end-4) '.log'];
+      else
+         logFileName = [g_cogeoac_dirLogFile '/generate_easy_one_argo_core_' currentTime '.log'];
+      end
+
+      g_cogeoac_logFilePathName = logFileName;
+
+      %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+      % create the list of profiles to exclude (from min/max test)
+      create_excluded_profile_list;
+
+      %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+      % process the files according to input and configuration parameters
+      generate_easy_one_argo_core_;
+
+      % finalize XML report
+      [status] = finalize_xml_report(ticStartTime, logFileName, []);
+
+   else
       g_cogeoac_dirOutputXmlFile = DIR_XML_FILE;
    end
-   if (isempty(g_cogeoac_generateOutputMatFlag))
-      g_cogeoac_generateOutputMatFlag = GENERATE_OUTPUT_MAT_FLAG;
-   end
-   if (isempty(g_cogeoac_dirOutputMatFiles))
-      g_cogeoac_dirOutputMatFiles = DIR_OUTPUT_MAT_FILES;
-   end
-
-   % log file creation
-   if (~isempty(g_cogeoac_xmlReportFileName))
-      logFileName = [g_cogeoac_dirLogFile '/generate_easy_one_argo_core_' g_cogeoac_xmlReportFileName(10:end-4) '.log'];
-   else
-      logFileName = [g_cogeoac_dirLogFile '/generate_easy_one_argo_core_' currentTime '.log'];
-   end
-
-   g_cogeoac_logFilePathName = logFileName;
-
-   % process the files according to input and configuration parameters
-   generate_easy_one_argo_core_;
-
-   % finalize XML report
-   [status] = finalize_xml_report(ticStartTime, logFileName, []);
-
-else
-   g_cogeoac_dirOutputXmlFile = DIR_XML_FILE;
-end
 
 catch
 
@@ -224,10 +277,114 @@ else
 end
 
 % save the XML report
-xmlwrite(xmlFileName, g_cogeoac_xmlReportDOMNode);
+writer = matlab.io.xml.dom.DOMWriter;
+writer.Configuration.FormatPrettyPrint = true;
+writeToFile(writer, g_cogeoac_xmlReportDOMNode, xmlFileName);
+
 % if (strcmp(status, 'nok') == 1)
 %    edit(xmlFileName);
 % end
+
+return
+
+% ------------------------------------------------------------------------------
+% Create the list of profiles that should be excluded from output dataset.
+%
+% There are 3 csv files of profiles excluded from min/max test:
+%   - drift_latest_exclusion.csv
+%   - drift_latest_new.csv
+%   - drift_latest_previous_reports.csv
+%
+% they are stored in:
+% in /home/oo26/coriolis/co05/co0508/etc/Report_ObjectiveAnalysisWarning/csv_drift 
+% or https://data-argo.ifremer.fr/etc/Report_ObjectiveAnalysisWarning/csv_drift/
+%
+% SYNTAX :
+%    create_excluded_profile_list
+%
+% INPUT PARAMETERS :
+%
+% OUTPUT PARAMETERS :
+%
+% EXAMPLES :
+%
+% SEE ALSO :
+% AUTHOR : Jean-Philippe Rannou (Capgemini) (jean.philippe.rannou@partenaire-exterieur.ifremer.fr)
+% ------------------------------------------------------------------------------
+% RELEASES :
+%   04/20/2026 - RNU - creation
+% ------------------------------------------------------------------------------
+function create_excluded_profile_list
+
+% excluded profile info
+global g_cogeoac_excluded_prof;
+g_cogeoac_excluded_prof = [];
+
+% input parameters
+global g_cogeoac_dirInputMinMaxFiles;
+
+
+for idLoop = 1:3
+   if (idLoop == 1)
+      fileName = 'drift_latest_exclusion.csv';
+   elseif (idLoop == 2)
+      fileName = 'drift_latest_new.csv';
+   elseif (idLoop == 3)
+      fileName = 'drift_latest_previous_reports.csv';
+   end
+   filePathName = [g_cogeoac_dirInputMinMaxFiles '/' fileName];
+   if ~(exist(filePathName, 'file') == 2)
+      fprintf('INFO: Missing  file : %s\n', filePathName);
+      continue
+   end
+
+   warning('off', 'MATLAB:table:ModifiedAndSavedVarnames');
+   dataTable = readtable(filePathName);
+   warning('on', 'MATLAB:table:ModifiedAndSavedVarnames');
+
+   wmoList = dataTable(:, 'WMO').Variables;
+   firstCycle = dataTable(:, 'FirstCycleInAlert').Variables;
+   lastCycle = dataTable(:, 'LastCycleInAlert').Variables;
+   dacList = dataTable(:, 'DAC').Variables;
+   piList = dataTable(:, 'PI').Variables;
+   piList = regexprep(piList, ' --> Exclusion List', '');
+   piList = regexprep(piList, ' --> Exclusion list', '');
+
+   for idL = 1:length(wmoList)
+      if (~isnan(wmoList(idL)))
+         if (~isnan(lastCycle(idL)))
+            cycleList = firstCycle(idL):lastCycle(idL);
+         else
+            cycleList = firstCycle(idL);
+         end
+         if (~isempty(g_cogeoac_excluded_prof))
+            idF = find([g_cogeoac_excluded_prof{:, 1}] == wmoList(idL));
+            if (~isempty(idF))
+               g_cogeoac_excluded_prof{idF, 2} = unique([g_cogeoac_excluded_prof{idF, 2} cycleList]);
+            else
+               g_cogeoac_excluded_prof{end+1, 1} = wmoList(idL);
+               g_cogeoac_excluded_prof{end, 2} = cycleList;
+               g_cogeoac_excluded_prof{end, 3} = dacList{idL};
+               g_cogeoac_excluded_prof{end, 4} = piList{idL};
+               g_cogeoac_excluded_prof{end, 5} = firstCycle(idL);
+               g_cogeoac_excluded_prof{end, 6} = lastCycle(idL);
+            end
+         else
+            g_cogeoac_excluded_prof{end+1, 1} = wmoList(idL);
+            g_cogeoac_excluded_prof{end, 2} = cycleList;
+            g_cogeoac_excluded_prof{end, 3} = dacList{idL};
+            g_cogeoac_excluded_prof{end, 4} = piList{idL};
+            g_cogeoac_excluded_prof{end, 5} = firstCycle(idL);
+            g_cogeoac_excluded_prof{end, 6} = lastCycle(idL);
+         end
+      end
+   end
+end
+
+if (~isempty(g_cogeoac_excluded_prof))
+   [~, idSort] = sort([g_cogeoac_excluded_prof{:, 1}]);
+   g_cogeoac_excluded_prof = g_cogeoac_excluded_prof(idSort, :);
+end
 
 return
 
@@ -253,25 +410,27 @@ function generate_easy_one_argo_core_
 
 % input parameters
 global g_cogeoac_dirInputNcFiles;
+global g_cogeoac_dirInputMinMaxFiles;
 global g_cogeoac_inputDataDoi;
 global g_cogeoac_dirOutputCsvFiles;
 global g_cogeoac_dirLogFile;
 global g_cogeoac_dirOutputXmlFile;
 global g_cogeoac_logFilePathName;
-global g_cogeoac_generateOutputMatFlag;
-global g_cogeoac_dirOutputMatFiles;
+global g_cogeoac_generateOutputAuditFlag;
+global g_cogeoac_dirOutputAuditFiles;
 
 % output directories
 global g_cogeoac_dirOutputCsvFile;
-g_cogeoac_dirOutputCsvFile = [];
 global g_cogeoac_dirOutputCsvFileData;
-g_cogeoac_dirOutputCsvFileData = [];
 global g_cogeoac_dirOutputCsvFileLite;
-g_cogeoac_dirOutputCsvFileLite = [];
 global g_cogeoac_dirOutputCsvFileLiteData;
+global g_cogeoac_dirOutputAuditFile;
+
+g_cogeoac_dirOutputCsvFile = [];
+g_cogeoac_dirOutputCsvFileData = [];
+g_cogeoac_dirOutputCsvFileLite = [];
 g_cogeoac_dirOutputCsvFileLiteData = [];
-global g_cogeoac_dirOutputMatFile;
-g_cogeoac_dirOutputMatFile = [];
+g_cogeoac_dirOutputAuditFile = [];
 
 % index files
 global g_cogeoac_indexFile;
@@ -327,16 +486,17 @@ tic;
 
 % print input parameter values in log file
 fprintf('\nINPUT PARAMETERS:\n');
-fprintf('DIR_INPUT_NC_FILES      : ''%s''\n', g_cogeoac_dirInputNcFiles);
-fprintf('INPUT_DATA_DOI          : ''%s''\n', g_cogeoac_inputDataDoi);
-fprintf('DIR_OUTPUT_CSV_FILES    : ''%s''\n', g_cogeoac_dirOutputCsvFiles);
-fprintf('DIR_LOG_FILE            : ''%s''\n', g_cogeoac_dirLogFile);
-fprintf('DIR_XML_FILE            : ''%s''\n', g_cogeoac_dirOutputXmlFile);
-fprintf('GENERATE_OUTPUT_MAT_FLAG: %d\n', g_cogeoac_generateOutputMatFlag);
-fprintf('DIR_OUTPUT_MAT_FILES    : ''%s''\n\n', g_cogeoac_dirOutputMatFiles);
+fprintf('DIR_INPUT_NC_FILES            : ''%s''\n', g_cogeoac_dirInputNcFiles);
+fprintf('DIR_INPUT_MIN_MAX_CSV_FILES   : ''%s''\n', g_cogeoac_dirInputMinMaxFiles);
+fprintf('INPUT_DATA_DOI                : ''%s''\n', g_cogeoac_inputDataDoi);
+fprintf('DIR_OUTPUT_CSV_FILES          : ''%s''\n', g_cogeoac_dirOutputCsvFiles);
+fprintf('DIR_LOG_FILE                  : ''%s''\n', g_cogeoac_dirLogFile);
+fprintf('DIR_XML_FILE                  : ''%s''\n', g_cogeoac_dirOutputXmlFile);
+fprintf('GENERATE_OUTPUT_AUDIT_FLAG    : %d\n', g_cogeoac_generateOutputAuditFlag);
+fprintf('DIR_OUTPUT_AUDIT_FILES        : ''%s''\n\n', g_cogeoac_dirOutputAuditFiles);
 
 % load interpolation reference data
-load_core_levels_ref;
+load_eoa_levels_ref;
 
 % create output directories
 if ~(exist(g_cogeoac_dirOutputCsvFiles, 'dir') == 7)
@@ -358,13 +518,14 @@ g_cogeoac_dirOutputCsvFileLiteData = [g_cogeoac_dirOutputCsvFileLite '/data'];
 if ~(exist(g_cogeoac_dirOutputCsvFileLiteData, 'dir') == 7)
    mkdir(g_cogeoac_dirOutputCsvFileLiteData);
 end
-if (g_cogeoac_generateOutputMatFlag == 1)
-   if ~(exist(g_cogeoac_dirOutputMatFiles, 'dir') == 7)
-      mkdir(g_cogeoac_dirOutputMatFiles);
+
+if (g_cogeoac_generateOutputAuditFlag == 1)
+   if ~(exist(g_cogeoac_dirOutputAuditFiles, 'dir') == 7)
+      mkdir(g_cogeoac_dirOutputAuditFiles);
    end
-   g_cogeoac_dirOutputMatFile = [g_cogeoac_dirOutputMatFiles '/EasyOneArgoTSLite_audit_' datestr(g_cogeoac_nowUtc, 'yyyymmddTHHMMSSZ')];
-   if ~(exist(g_cogeoac_dirOutputMatFile, 'dir') == 7)
-      mkdir(g_cogeoac_dirOutputMatFile);
+   g_cogeoac_dirOutputAuditFile = [g_cogeoac_dirOutputAuditFiles '/EasyOneArgoTSLite_audit_' datestr(g_cogeoac_nowUtc, 'yyyymmddTHHMMSSZ')];
+   if ~(exist(g_cogeoac_dirOutputAuditFile, 'dir') == 7)
+      mkdir(g_cogeoac_dirOutputAuditFile);
    end
 end
 
@@ -379,6 +540,7 @@ g_cogeoac_reportFileLite = [g_cogeoac_dirOutputCsvFileLite '/EasyOneArgoTSLite_r
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 % process input directory
 
+% input are mono-cycle profile files
 stop = 0;
 nbFiles = 0;
 dirNames = dir(g_cogeoac_dirInputNcFiles);
@@ -411,9 +573,16 @@ for idDir = 1:length(dirNames)
 
       fprintf('%04d/%04d %s\n', idFDir-2, length(floatDirNames)-2, floatDirName);
 
+      % list of profiles for this float
       profFiles = [ ...
          dir([floatDirPath '/' floatDirName '/profiles/D' floatDirName '*.nc']); ...
          dir([floatDirPath '/' floatDirName '/profiles/R' floatDirName '*.nc'])];
+
+      % check that there is only one file ('D*.nc' or 'R*.nc') for each cycle
+      % and direction + exclude profiles rejected by the min/max test
+      profFiles = clean_profile_file_list(profFiles, str2double(floatDirName));
+
+      % process remaining profiles
       for idFFile = 1:length(profFiles)
 
          profFilePathName = [floatDirPath '/' floatDirName '/profiles/' profFiles(idFFile).name];
@@ -447,6 +616,83 @@ ellapsedTime = toc;
 fprintf('done (Elapsed time is %.1f seconds)\n', ellapsedTime);
 
 diary off;
+
+return
+
+% ------------------------------------------------------------------------------
+% Check that both 'D' and 'R' data mode mono-cycle core profiles are not present
+% for the same cycle and direction (and remove the 'R' data mode ones from the
+% list of profiles in such case).
+% Exclude the profiles rejected by the min/max test.
+%
+% SYNTAX :
+%  [o_profFiles] = clean_profile_file_list(a_profFiles, a_floatNum)
+%
+% INPUT PARAMETERS :
+%   a_profFiles : input profile list
+%   a_floatNum  : float WMO number
+%
+% OUTPUT PARAMETERS :
+%   o_profFiles : output profile list
+%
+% EXAMPLES :
+%
+% SEE ALSO :
+% AUTHOR : Jean-Philippe Rannou (Capgemini) (jean.philippe.rannou@partenaire-exterieur.ifremer.fr)
+% ------------------------------------------------------------------------------
+% RELEASES :
+%   03/16/2026 - RNU - creation
+% ------------------------------------------------------------------------------
+function [o_profFiles] = clean_profile_file_list(a_profFiles, a_floatNum)
+
+% output parameters initialization
+o_profFiles = a_profFiles;
+
+% excluded profile info
+global g_cogeoac_excluded_prof;
+
+
+% collect information on input profiles
+profInfo = ones(length(o_profFiles), 3);
+for idP = 1:length(o_profFiles)
+   profFileName = o_profFiles(idP).name;
+   idFus = strfind(profFileName, '_');
+   cyNum = str2double(profFileName(idFus+1:idFus+3));
+   if (any(strfind(profFileName, 'D.nc')))
+      dir = 1;
+   else
+      dir = 2;
+   end
+   if (profFileName(1) == 'D')
+      dm = 1;
+   else
+      dm = 0;
+   end
+   profInfo(idP, :) = [cyNum, dir, dm];
+end
+
+% check that 'D' and 'R' data modes are not simultaneously present for the same
+% cycle and direction
+profRtListId = find(profInfo(:, 3) == 0);
+idDel = [];
+for idP = profRtListId'
+   if (any((profInfo(:, 1) == profInfo(idP, 1)) & ...
+         (profInfo(:, 2) == profInfo(idP, 2)) & (profInfo(:, 3) == 1)))
+      idDel = [idDel; idP];
+   end
+end
+
+% excude profiles rejected by the min/max test
+if (~isempty(g_cogeoac_excluded_prof))
+   idF = find([g_cogeoac_excluded_prof{:, 1}] == a_floatNum);
+   if (~isempty(idF))
+      excludedCycleList = g_cogeoac_excluded_prof{idF, 2};
+      idF = find((profInfo(:, 2) == 2) & (ismember(profInfo(:, 1), excludedCycleList)));
+      idDel = [idDel; idF];
+   end
+end
+
+o_profFiles(unique(idDel)) = [];
 
 return
 
@@ -503,11 +749,7 @@ MEAS_FV = single(99999);
 
 % retrieve data from profile file
 wantedVars = [ ...
-   {'FORMAT_VERSION'} ...
-   {'DATE_CREATION'} ...
-   {'DATE_UPDATE'} ...
    {'PLATFORM_NUMBER'} ...
-   {'PROJECT_NAME'} ...
    {'PI_NAME'} ...
    {'STATION_PARAMETERS'} ...
    {'CYCLE_NUMBER'} ...
@@ -553,6 +795,13 @@ if (~isempty(idGoList))
    if (any(idGoList == 1))
 
       idPrim = 1;
+      % put longitude in the [-180; 180[ interval
+      if (longitude(idPrim) >= 180)
+         longitude(idPrim) = longitude(idPrim) - 360;
+      end
+      if (longitude(idPrim) < -180)
+         longitude(idPrim) = longitude(idPrim) + 360;
+      end
 
       platformNumber = get_data_from_name('PLATFORM_NUMBER', profData)';
       piName = get_data_from_name('PI_NAME', profData)';
@@ -625,14 +874,11 @@ if (~isempty(idGoList))
             profStruct.juld = juld(idPrim);
             profStruct.juldStr = datestr(juld(idPrim)+g_cogeoac_janFirst1950InMatlab, 'yyyy-mm-ddTHH:MM:SSZ');
             profStruct.lat = latitude(idPrim);
-            profStruct.latStr = sprintf('%.3f', latitude(idPrim));
+            profStruct.latStr = sprintf('%.5f', latitude(idPrim));
             profStruct.lon = longitude(idPrim);
-            profStruct.lonStr = sprintf('%.3f', longitude(idPrim));
+            profStruct.lonStr = sprintf('%.5f', longitude(idPrim));
             profStruct.data = data;
             profStruct.dataQc = dataQc;
-            profStruct.dataCsv = [];
-            profStruct.dataGrid = [];
-            profStruct.dataMat = [];
 
             %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
             % interpolate_data PTS mesurements on a vertical grid
@@ -763,25 +1009,21 @@ function [o_profStruct] = interpolate_data(a_profStruct)
 % output parameters initialization
 o_profStruct = a_profStruct;
 
-global g_cogeoac_coreLevels;
-global g_cogeoac_pTolerance;
+% defined levels of vertical interpolation grid
+global g_cogeoac_eoaLevels;
+global g_cogeoac_eoaUBoundLevel;
+global g_cogeoac_eoaLBoundLevel;
 
 % berbose mode (for additionnal information on ignored data)
 global g_cogeoac_verboseMode;
 
 % input parameters
-global g_cogeoac_generateOutputMatFlag;
+global g_cogeoac_generateOutputAuditFlag;
+
 
 % fillValue of PTS measurements (not retrieved from NetCDF file to speed up the
 % process)
 MEAS_FV = single(99999);
-
-% threshold to select data
-DENSITY_INVERSION_THRESHOLD = -0.03;
-SIGMA_TOLERANCE = 1;
-
-coreLevels = g_cogeoac_coreLevels;
-pTolerance = g_cogeoac_pTolerance;
 
 inputData = a_profStruct.data;
 inputDataQc = a_profStruct.dataQc;
@@ -797,53 +1039,75 @@ if (~isempty(inputData))
 
    % set EasyOneArgoTS CSV output parameter
    o_profStruct.dataCsv = inputData;
+   o_profStruct.dataCsvMaxPres = max(inputData(:, 1));
 
    idGood = find(inputData(:, 1) > 0); % BM2020 does not support negative pressures
-   if (length(idGood) > 4) % BM2020 requires at least 5 points
+   pres = inputData(idGood, 1);
+   temp = inputData(idGood, 2);
+   psal = inputData(idGood, 3);
+   paramErr = inputData(idGood, 4:6);
 
-      pres = inputData(idGood, 1);
-      temp = inputData(idGood, 2);
-      psal = inputData(idGood, 3);
-      paramErr = inputData(idGood, 4:6);
+   if (length(pres) > 4) % BM2020 requires at least 5 points
 
-      % BM2020 requires pressure increases monotonically, exclude density inversions > 0.03kg/m3
-      diffPres = diff(pres);
-      sigma = sw_pden(psal, temp, pres, 1000) - 1000; % use sigma1 here
-      diffSigma = diff(sigma);
+      % BM2020 requires pressure increases monotonically
+      % consider increasing pressures only (we start the algorithm from the
+      % middle of the profile)
+      idToDel = [];
+      idStart = fix(length(pres)/2);
+      pMin = pres(idStart);
+      for id = idStart-1:-1:1
+         if (pres(id) >= pMin)
+            idToDel = [idToDel id];
+         else
+            pMin = pres(id);
+         end
+      end
+      pMax = pres(idStart);
+      for id = idStart+1:length(pres)
+         if (pres(id) <= pMax)
+            idToDel = [idToDel id];
+         else
+            pMax = pres(id);
+         end
+      end
+      pres(idToDel) = [];
+      temp(idToDel) = [];
+      psal(idToDel) = [];
+      paramErr(idToDel, :) = [];
 
-      if ~(any(diffPres <= 0) || any(diffSigma < DENSITY_INVERSION_THRESHOLD))
+      if (length(pres) > 4) % BM2020 requires at least 5 points
+
+         eoaLevels = g_cogeoac_eoaLevels;
+         eoaUBoundLevel = g_cogeoac_eoaUBoundLevel;
+         eoaLBoundLevel = g_cogeoac_eoaLBoundLevel;
 
          [SA, ~] = gsw_SA_from_SP(psal, pres, a_profStruct.lon, a_profStruct.lat);
          CT = gsw_CT_from_t(SA, temp, pres);
-         [SA_i, CT_i] = gsw_SA_CT_interp(SA, CT, pres, coreLevels);
-         [S_i, ~] = gsw_SP_from_SA(SA_i, coreLevels, a_profStruct.lon, a_profStruct.lat);
-         T_i = gsw_t_from_CT(SA_i, CT_i, coreLevels);
+         [SA_i, CT_i] = gsw_SA_CT_interp(SA, CT, pres, eoaLevels);
+         [S_i, ~] = gsw_SP_from_SA(SA_i, eoaLevels, a_profStruct.lon, a_profStruct.lat);
+         T_i = gsw_t_from_CT(SA_i, CT_i, eoaLevels);
          tInSitu = T_i;
          sPractical = S_i;
 
-         % toss out points outside of input profile end points
-         idOut = find((coreLevels < min(pres)) | (coreLevels > max(pres)));
-         tInSitu(idOut) = nan;
-         sPractical(idOut) = nan;
+         % count the number of measurements in each "box"
+         counts = hist(pres, eoaLevels - 0.001); % - 0.001 so that the lower boundary is excluded
+         % update counts in first/last "box"
+         counts(1) = counts(1) - length(find(pres < eoaUBoundLevel));
+         counts(end) = counts(end) - length(find(pres >= eoaLBoundLevel));
 
-         pToleranceLookup = interp1(coreLevels, pTolerance, pres(1:end-1), 'linear');
-         for idLev = 1:length(pres)-1
-            % toss out points where input pressure gap is greater than tolerance
-            if (diffPres(idLev) > pToleranceLookup(idLev))
-               idDel = find((coreLevels > pres(idLev) & (coreLevels < pres(idLev+1))));
-               tInSitu(idDel) = nan;
-               sPractical(idDel) = nan;
-            end
-            % toss out points where input sigma gap is greater than tolerance
-            if (diffSigma(idLev) > SIGMA_TOLERANCE)
-               idDel = find((coreLevels > pres(idLev) & (coreLevels < pres(idLev+1))));
-               tInSitu(idDel) = nan;
-               sPractical(idDel) = nan;
-            end
-         end
+         % remove interpolated/extrapolated points here there are no original
+         % data within the "box"
+         idNoMeas = find(counts == 0);
+         tInSitu(idNoMeas) = nan;
+         sPractical(idNoMeas) = nan;
+
+         % remove extrapolated points deeper than MaxP + 1%
+         idTooDeep = find(eoaLevels > 1.01*max(pres));
+         tInSitu(idTooDeep) = nan;
+         sPractical(idTooDeep) = nan;
 
          % manage parameter error
-         grdParamErr = nan(size(coreLevels, 1), 3);
+         grdParamErr = nan(size(eoaLevels, 1), 3);
 
          intParamList = [];
          for id = 1:3
@@ -859,11 +1123,11 @@ if (~isempty(inputData))
          if (~isempty(intParamList))
 
             % we need to find the levels of each grid PRES neighbors in input data
-            idAbove = nan(size(coreLevels));
-            idBelow = nan(size(coreLevels));
-            idCheckList = find((coreLevels >= min(pres)) & (coreLevels <= max(pres)));
+            idAbove = nan(size(eoaLevels));
+            idBelow = nan(size(eoaLevels));
+            idCheckList = find((eoaLevels >= min(pres)) & (eoaLevels <= max(pres)));
             for id = idCheckList'
-               lev = coreLevels(id);
+               lev = eoaLevels(id);
                idA = find(pres <= lev, 1, 'last');
                idB = find(pres >= lev, 1, 'first');
                if (~isempty(idA) && ~isempty(idB))
@@ -882,12 +1146,31 @@ if (~isempty(inputData))
          end
 
          % set EasyOneArgoTSLite CSV output parameter
-         dataGrid = [coreLevels, tInSitu, sPractical, grdParamErr];
-         dataGrid(any(isnan(dataGrid(:, 1:3)), 2), :) = [];
+         dataGrid = [eoaLevels, tInSitu, sPractical, grdParamErr];
+
+         % remove levels below the deepest useful one
+         idNan = find(any(isnan(dataGrid(:, 2:3)), 2));
+         if (any(idNan == size(dataGrid, 1)))
+            firstUsefulUd = find(diff(flipud(idNan)) ~= -1, 1, 'first');
+            if (~isempty(firstUsefulUd))
+               lastUseful = size(dataGrid, 1) - firstUsefulUd;
+            else
+               lastUseful = idNan(1) - 1;
+            end
+            dataGrid(lastUseful+1:end, :) = [];
+         else
+            lastUseful = size(dataGrid, 1);
+         end
+
+         % set grdParamErr to Nan in useless levels
+         idToNan = find(any(isnan(dataGrid(1:lastUseful, 2:3)), 2));
+         dataGrid(idToNan, 4:end) = nan(length(idToNan), 3);
+
          o_profStruct.dataGrid = dataGrid;
+         o_profStruct.dataGridMaxPres = max(dataGrid(:, 1));
 
          % set EasyOneArgoTSLite_audit MAT output parameter
-         if (g_cogeoac_generateOutputMatFlag ==1)
+         if (g_cogeoac_generateOutputAuditFlag ==1)
             if ((o_profStruct.dir == 'A') && (o_profStruct.dataMode == 'D'))
 
                o_profStruct.dataMat = get_mat_prof_data_init_struct;
@@ -895,23 +1178,14 @@ if (~isempty(inputData))
                o_profStruct.dataMat.sallite = sPractical;
             end
          end
-
       else
          if (g_cogeoac_verboseMode)
-            if (any(diffPres <= 0))
-               fprintf('INFO: Profile %s_%s_%c_%c not interpolated (no monotonically increasing)\n', ...
-                  a_profStruct.wmo, ...
-                  a_profStruct.cyNumStr, ...
-                  a_profStruct.dir, ...
-                  a_profStruct.dataMode);
-            end
-            if (any(diffSigma < DENSITY_INVERSION_THRESHOLD))
-               fprintf('INFO: Profile %s_%s_%c_%c not interpolated (density inversion)\n', ...
-                  a_profStruct.wmo, ...
-                  a_profStruct.cyNumStr, ...
-                  a_profStruct.dir, ...
-                  a_profStruct.dataMode);
-            end
+            fprintf('INFO: Profile %s_%s_%c_%c not interpolated (only %d levels)\n', ...
+               a_profStruct.wmo, ...
+               a_profStruct.cyNumStr, ...
+               a_profStruct.dir, ...
+               a_profStruct.dataMode, ...
+               length(pres));
          end
       end
    else
@@ -921,7 +1195,7 @@ if (~isempty(inputData))
             a_profStruct.cyNumStr, ...
             a_profStruct.dir, ...
             a_profStruct.dataMode, ...
-            length(idGood));
+            length(pres));
       end
    end
 end
@@ -950,7 +1224,7 @@ function print_output_file
 
 global g_cogeoac_dirOutputCsvFileData;
 global g_cogeoac_dirOutputCsvFileLiteData;
-global g_cogeoac_dirOutputMatFile;
+global g_cogeoac_dirOutputAuditFile;
 
 global g_cogeoac_indexFile;
 global g_cogeoac_indexFileLite;
@@ -981,20 +1255,20 @@ for idP = 1:g_cogeoac_profTabId-1
    prof = g_cogeoac_profTab(idP);
 
    header = cell(14, 1);
-   header{1} = '#format EasyOneArgoTS';
-   header{2} = ['#creation_date ' g_cogeoac_nowUtcStr];
-   header{3} = '#creation_centre Ifremer';
-   header{4} = '#creation_centre_pid https://ror.org/044jxhp58';
-   header{5} = ['#data_source_doi ' g_cogeoac_inputDataDoi];
-   header{6} = ['#data_centre ' prof.dac];
-   header{7} = ['#platform_number ' prof.wmo];
-   header{8} = ['#cycle_number ' prof.cyNumStr];
-   header{9} = ['#direction_of_profile ' prof.dir];
-   header{10} = ['#data_mode ' prof.dataMode];
-   header{11} = ['#profile_date ' prof.juldStr];
-   header{12} = ['#profile_latitude ' prof.latStr];
-   header{13} = ['#profile_longitude ' prof.lonStr];
-   header{14} = '#pressure =  sea water pressure equals 0 at sea-level';
+   header{1} = '#format = EasyOneArgoTS';
+   header{2} = ['#creation_date = ' g_cogeoac_nowUtcStr];
+   header{3} = '#creation_centre = Ifremer';
+   header{4} = '#creation_centre_pid = https://ror.org/044jxhp58';
+   header{5} = ['#data_source_doi = ' g_cogeoac_inputDataDoi];
+   header{6} = ['#data_centre = ' get_extended_data_center(prof.dac)];
+   header{7} = ['#platform_number = ' prof.wmo];
+   header{8} = ['#cycle_number = ' prof.cyNumStr];
+   header{9} = ['#direction_of_profile (''A'' : ascending, ''D'' : descending) = ' prof.dir];
+   header{10} = ['#data_mode (''D'' : delayed-mode, ''A'' : adjusted in real-time, ''R'' : real-time) = ' prof.dataMode];
+   header{11} = ['#profile_date = ' prof.juldStr];
+   header{12} = ['#profile_latitude = ' prof.latStr];
+   header{13} = ['#profile_longitude = ' prof.lonStr];
+   header{14} = '#pressure = sea water pressure equals 0 at sea-level';
    header{15} = '#temperature = sea temperature in-situ ITS-90 scale';
    header{16} = '#salinity = practical salinity';
 
@@ -1047,7 +1321,7 @@ for idP = 1:g_cogeoac_profTabId-1
    % create EasyOneArgoTSLite file
    if (~isempty(prof.dataGrid))
 
-      header{1} = '#format EasyOneArgoTSLite';
+      header{1} = '#format = EasyOneArgoTSLite';
 
       fmtParam = [{'%.2f'} {',%.3f'} {',%.3f'} {',%.2f'} {',%.3f'} {',%.3f'}];
       data = prof.dataGrid;
@@ -1096,12 +1370,12 @@ matOutputData(matOutputDataCpt:end) = [];
 if ~(exist(g_cogeoac_indexFile, 'file') == 2)
 
    header = cell(5, 1);
-   header{1} = '#format EasyOneArgoTSIndexList';
-   header{2} = ['#creation_date ' g_cogeoac_nowUtcStr];
-   header{3} = '#creation_centre Ifremer';
-   header{4} = '#creation_centre_pid https://ror.org/044jxhp58';
-   header{5} = ['#creation_tool_version ' g_cogeoac_generateEasyOneArgoCoreVersion];
-   header{6} = 'data_centre,platform_number,cycle_number,direction_of_profile,data_mode,profile_date,profile_latitude,profile_longitude';
+   header{1} = '#format = EasyOneArgoTSIndexList';
+   header{2} = ['#creation_date = ' g_cogeoac_nowUtcStr];
+   header{3} = '#creation_centre = Ifremer';
+   header{4} = '#creation_centre_pid = https://ror.org/044jxhp58';
+   header{5} = ['#creation_tool_version = ' g_cogeoac_generateEasyOneArgoCoreVersion];
+   header{6} = 'data_centre,platform_number,cycle_number,direction_of_profile,data_mode,profile_date,profile_latitude,profile_longitude,maximum_pressure_of_good_data';
 
    fId = fopen(g_cogeoac_indexFile, 'wt');
    if (fId == -1)
@@ -1113,7 +1387,7 @@ if ~(exist(g_cogeoac_indexFile, 'file') == 2)
 end
 if ~(exist(g_cogeoac_indexFileLite, 'file') == 2)
 
-   header{1} = '#format EasyOneArgoTSLiteIndexList';
+   header{1} = '#format = EasyOneArgoTSLiteIndexList';
 
    fId = fopen(g_cogeoac_indexFileLite, 'wt');
    if (fId == -1)
@@ -1139,7 +1413,7 @@ end
 for idP = 1:g_cogeoac_profTabId-1
    prof = g_cogeoac_profTab(idP);
 
-   fprintf(fId, '%s,%s,%s,%c,%c,%s,%s,%s\n', ...
+   fprintf(fId, '%s,%s,%s,%c,%c,%s,%s,%s,%.2f\n', ...
       prof.dac, ...
       prof.wmo, ...
       prof.cyNumStr, ...
@@ -1147,11 +1421,12 @@ for idP = 1:g_cogeoac_profTabId-1
       prof.dataMode, ...
       prof.juldStr, ...
       prof.latStr, ...
-      prof.lonStr);
+      prof.lonStr, ...
+      prof.dataCsvMaxPres);
 
    if (~isempty(prof.dataGrid))
 
-      fprintf(fIdLite, '%s,%s,%s,%c,%c,%s,%s,%s\n', ...
+      fprintf(fIdLite, '%s,%s,%s,%c,%c,%s,%s,%s,%.2f\n', ...
          prof.dac, ...
          prof.wmo, ...
          prof.cyNumStr, ...
@@ -1159,7 +1434,8 @@ for idP = 1:g_cogeoac_profTabId-1
          prof.dataMode, ...
          prof.juldStr, ...
          prof.latStr, ...
-         prof.lonStr);
+         prof.lonStr, ...
+         prof.dataGridMaxPres);
    end
 end
 
@@ -1214,7 +1490,7 @@ if (~isempty(matOutputData))
       % create output MAT file
       matFileName = sprintf('%d_%d_%d_%d_tempo.mat', ...
          boxNum, profBox.nbLev, size(profBox.preso, 2), g_cogeoac_tempoOutPutMatId);
-      matFilePathName = [g_cogeoac_dirOutputMatFile '/' matFileName];
+      matFilePathName = [g_cogeoac_dirOutputAuditFile '/' matFileName];
       save(matFilePathName, '-struct', 'profBox');
       g_cogeoac_tempoOutPutMatId = g_cogeoac_tempoOutPutMatId + 1;
    end
@@ -1243,22 +1519,23 @@ return
 function concat_output_mat_files
 
 % input parameters
-global g_cogeoac_generateOutputMatFlag;
-global g_cogeoac_dirOutputMatFile;
+global g_cogeoac_generateOutputAuditFlag;
+global g_cogeoac_dirOutputAuditFile;
 
-global g_cogeoac_coreLevels;
+% defined levels of vertical interpolation grid
+global g_cogeoac_eoaLevels;
 
 % number of output files generated
 global g_cogeoac_nbOutputFilesMat;
 global g_cogeoac_nbOutputProfMat;
 
 
-if (g_cogeoac_generateOutputMatFlag == 0)
+if (g_cogeoac_generateOutputAuditFlag == 0)
    return
 end
 
 % look for temporary output MAT files and retrieve information from their names
-tempMatFileNames = dir([g_cogeoac_dirOutputMatFile '/*_tempo.mat']);
+tempMatFileNames = dir([g_cogeoac_dirOutputAuditFile '/*_tempo.mat']);
 fileNameList = cell(1, length(tempMatFileNames));
 wmoBoxList = nan(1, length(tempMatFileNames));
 nbLevList = ones(1, length(tempMatFileNames))*-1;
@@ -1293,9 +1570,9 @@ for boxNum = wmoBox
    profBox.lat = nan(1, nbProf);
    profBox.long = nan(1, nbProf);
 
-   profBox.preslitelevels = g_cogeoac_coreLevels;
-   profBox.templite = nan(length(g_cogeoac_coreLevels), nbProf);
-   profBox.sallite = nan(length(g_cogeoac_coreLevels), nbProf);
+   profBox.preslitelevels = g_cogeoac_eoaLevels;
+   profBox.templite = nan(length(g_cogeoac_eoaLevels), nbProf);
+   profBox.sallite = nan(length(g_cogeoac_eoaLevels), nbProf);
 
    profBox.preso = nan(nbLev, nbProf);
    profBox.presadj = nan(nbLev, nbProf);
@@ -1310,7 +1587,7 @@ for boxNum = wmoBox
    fistId = 1;
    for idP = 1:length(idProf)
 
-      tempMatFileName = [g_cogeoac_dirOutputMatFile '/' fileNameList{idProf(idP)}];
+      tempMatFileName = [g_cogeoac_dirOutputAuditFile '/' fileNameList{idProf(idP)}];
       profBoxIn = load(tempMatFileName);
 
       lastId = fistId + nbProfList(idProf(idP)) - 1;
@@ -1341,7 +1618,7 @@ for boxNum = wmoBox
 
    % create output MAT file
    matFileName = sprintf('audit_%d.mat', boxNum);
-   matFilePathName = [g_cogeoac_dirOutputMatFile '/' matFileName];
+   matFilePathName = [g_cogeoac_dirOutputAuditFile '/' matFileName];
    save(matFilePathName, '-struct', 'profBox', ...
       'source', 'dates', 'lat', 'long', ...
       'preslitelevels', 'templite', 'sallite', ...
@@ -1451,10 +1728,10 @@ o_wmoNumber = (w*1000 + x*100 + yz);
 return
 
 % ------------------------------------------------------------------------------
-% Load interpolation reference data.
+% Load interpolation reference levels.
 %
 % SYNTAX :
-%  load_core_levels_ref
+%  load_eoa_levels_ref
 %
 % INPUT PARAMETERS :
 %
@@ -1468,122 +1745,19 @@ return
 % RELEASES :
 %   11/25/2024 - RNU - creation
 % ------------------------------------------------------------------------------
-function load_core_levels_ref
+function load_eoa_levels_ref
 
-global g_cogeoac_coreLevels;
-global g_cogeoac_pTolerance;
+% defined levels of vertical interpolation grid
+global g_cogeoac_eoaLevels;
+global g_cogeoac_eoaUBoundLevel;
+global g_cogeoac_eoaLBoundLevel;
 
-levels = [ ...
-   [2, 6]; ...
-   [5, 9]; ...
-   [10, 15]; ...
-   [15, 15]; ...
-   [20, 15]; ...
-   [25, 15]; ...
-   [30, 15]; ...
-   [35, 15]; ...
-   [40, 15]; ...
-   [45, 15]; ...
-   [50, 15]; ...
-   [55, 15]; ...
-   [60, 15]; ...
-   [65, 15]; ...
-   [70, 15]; ...
-   [75, 15]; ...
-   [80, 15]; ...
-   [85, 15]; ...
-   [90, 15]; ...
-   [95, 15]; ...
-   [100, 15]; ...
-   [105, 15]; ...
-   [110, 15]; ...
-   [115, 15]; ...
-   [120, 15]; ...
-   [125, 15]; ...
-   [130, 15]; ...
-   [135, 15]; ...
-   [140, 15]; ...
-   [145, 15]; ...
-   [150, 15]; ...
-   [155, 15]; ...
-   [160, 15]; ...
-   [165, 15]; ...
-   [170, 15]; ...
-   [175, 15]; ...
-   [180, 15]; ...
-   [185, 15]; ...
-   [190, 15]; ...
-   [195, 15]; ...
-   [200, 15]; ...
-   [205, 15]; ...
-   [210, 15]; ...
-   [215, 15]; ...
-   [220, 15]; ...
-   [225, 15]; ...
-   [230, 15]; ...
-   [235, 15]; ...
-   [240, 15]; ...
-   [245, 15]; ...
-   [250, 15]; ...
-   [260, 30]; ...
-   [270, 30]; ...
-   [280, 30]; ...
-   [290, 30]; ...
-   [300, 30]; ...
-   [310, 30]; ...
-   [320, 30]; ...
-   [330, 30]; ...
-   [340, 30]; ...
-   [350, 30]; ...
-   [375, 75]; ...
-   [400, 75]; ...
-   [425, 75]; ...
-   [450, 75]; ...
-   [475, 75]; ...
-   [500, 75]; ...
-   [550, 150]; ...
-   [600, 150]; ...
-   [650, 150]; ...
-   [700, 150]; ...
-   [750, 150]; ...
-   [800, 150]; ...
-   [850, 150]; ...
-   [900, 150]; ...
-   [950, 150]; ...
-   [1000, 150]; ...
-   [1100, 300]; ...
-   [1200, 300]; ...
-   [1300, 300]; ...
-   [1400, 300]; ...
-   [1500, 300]; ...
-   [1600, 300]; ...
-   [1700, 300]; ...
-   [1800, 300]; ...
-   [1900, 300]; ...
-   [2000, 300]; ...
-   [2200, 600]; ...
-   [2400, 600]; ...
-   [2600, 600]; ...
-   [2800, 600]; ...
-   [3000, 600]; ...
-   [3200, 600]; ...
-   [3400, 600]; ...
-   [3600, 600]; ...
-   [3800, 600]; ...
-   [4000, 600]; ...
-   [4200, 600]; ...
-   [4400, 600]; ...
-   [4600, 600]; ...
-   [4800, 600]; ...
-   [5000, 600]; ...
-   [5200, 600]; ...
-   [5400, 600]; ...
-   [5600, 600]; ...
-   [5800, 600]; ...
-   [6000, 600]];
+levels = [2 5:5:250, 260:10:350, 375:25:500, 550:50:1000, 1100:100:2000, ...
+   2200:200:6000]';
 
-g_cogeoac_coreLevels = levels(:, 1);
-g_cogeoac_pTolerance = levels(:, 2);
+g_cogeoac_eoaLevels = levels;
+g_cogeoac_eoaUBoundLevel = 0.5; % upper boundary of the first (shallowest) box
+g_cogeoac_eoaLBoundLevel = 6100; % lower boundary of the last (deepest) box
 
 return
 
@@ -1626,7 +1800,9 @@ o_profDataStruct = struct( ...
    'data', [], ...
    'dataQc', [], ...
    'dataCsv', [], ...
+   'dataCsvMaxPres', [], ...
    'dataGrid', [], ...
+   'dataGridMaxPres', '', ...
    'dataMat', []);
 
 return
@@ -1660,18 +1836,485 @@ o_matProfDataStruct = struct( ...
    'dates', '', ...
    'lat', '', ...
    'long', '', ...
-   'preso', '', ...
-   'presadj', '', ...
-   'presadjqc', '', ...
-   'preslitelevels', '', ...
-   'tempo', '', ...
-   'tempadj', '', ...
-   'tempadjqc', '', ...
-   'templite', '', ...
-   'salo', '', ...
-   'saladj', '', ...
-   'saladjqc', '', ...
-   'sallite', '');
+   'preso', [], ...
+   'presadj', [], ...
+   'presadjqc', [], ...
+   'preslitelevels', [], ...
+   'tempo', [], ...
+   'tempadj', [], ...
+   'tempadjqc', [], ...
+   'templite', [], ...
+   'salo', [], ...
+   'saladj', [], ...
+   'saladjqc', [], ...
+   'sallite', []);
+
+return
+
+% ------------------------------------------------------------------------------
+% Initialize XML report.
+%
+% SYNTAX :
+%  init_xml_report(a_time)
+%
+% INPUT PARAMETERS :
+%   a_time : start date of the run ('yyyymmddTHHMMSS' format)
+%
+% OUTPUT PARAMETERS :
+%
+% EXAMPLES :
+%
+% SEE ALSO :
+% AUTHOR : Jean-Philippe Rannou (Capgemini) (jean.philippe.rannou@partenaire-exterieur.ifremer.fr)
+% ------------------------------------------------------------------------------
+% RELEASES :
+%   11/25/2024 - RNU - creation
+% ------------------------------------------------------------------------------
+function init_xml_report(a_time)
+
+import matlab.io.xml.dom.*
+
+% DOM node of XML report
+global g_cogeoac_xmlReportDOMNode;
+
+% program version
+global g_cogeoac_generateEasyOneArgoCoreVersion;
+
+
+% initialize XML report
+docNode = Document('coriolis_function_report');
+docRootNode = getDocumentElement(docNode);
+
+newChild = createElement(docNode, 'function');
+textNode = 'CO-05-08-16-01';
+appendChild(newChild, createTextNode(docNode, textNode));
+appendChild(docRootNode, newChild);
+
+newChild = createElement(docNode, 'comment');
+textNode = 'Argo Coriolis Easy OneArgo core generator (generate_easy_one_argo_core)';
+appendChild(newChild, createTextNode(docNode, textNode));
+appendChild(docRootNode, newChild);
+
+newChild = createElement(docNode, 'tool_version');
+textNode = g_cogeoac_generateEasyOneArgoCoreVersion;
+appendChild(newChild, createTextNode(docNode, textNode));
+appendChild(docRootNode, newChild);
+
+newChild = createElement(docNode, 'date');
+textNode = datestr(datenum(a_time, 'yyyymmddTHHMMSSZ'), 'dd/mm/yyyy HH:MM:SS');
+appendChild(newChild, createTextNode(docNode, textNode));
+appendChild(docRootNode, newChild);
+
+g_cogeoac_xmlReportDOMNode = docNode;
+
+return
+
+% ------------------------------------------------------------------------------
+% Parse input parameters.
+%
+% SYNTAX :
+%  [o_inputError] = parse_input_param(a_varargin)
+%
+% INPUT PARAMETERS :
+%   a_varargin : input parameters
+%
+% OUTPUT PARAMETERS :
+%   o_inputError : input error flag
+%
+% EXAMPLES :
+%
+% SEE ALSO :
+% AUTHOR : Jean-Philippe Rannou (Capgemini) (jean.philippe.rannou@partenaire-exterieur.ifremer.fr)
+% ------------------------------------------------------------------------------
+% RELEASES :
+%   11/25/2024 - RNU - creation
+% ------------------------------------------------------------------------------
+function [o_inputError] = parse_input_param(a_varargin)
+
+% output parameters initialization
+o_inputError = 0;
+
+global g_cogeoac_dirInputNcFiles;
+global g_cogeoac_dirInputMinMaxFiles;
+global g_cogeoac_inputDataDoi;
+global g_cogeoac_dirOutputCsvFiles;
+global g_cogeoac_dirLogFile;
+global g_cogeoac_dirOutputXmlFile;
+global g_cogeoac_xmlReportFileName;
+global g_cogeoac_generateOutputAuditFlag;
+global g_cogeoac_dirOutputAuditFiles;
+
+g_cogeoac_dirInputNcFiles = [];
+g_cogeoac_dirInputMinMaxFiles = [];
+g_cogeoac_inputDataDoi = [];
+g_cogeoac_dirOutputCsvFiles = [];
+g_cogeoac_dirLogFile = [];
+g_cogeoac_dirOutputXmlFile = [];
+g_cogeoac_xmlReportFileName = [];
+g_cogeoac_generateOutputAuditFlag = [];
+g_cogeoac_dirOutputAuditFiles = [];
+
+
+% ignore empty input parameters
+idDel = [];
+for id = 1:length(a_varargin)
+   if (isempty(a_varargin{id}))
+      idDel = [idDel id];
+   end
+end
+a_varargin(idDel) = [];
+
+% check input parameters
+if (~isempty(a_varargin))
+   if (rem(length(a_varargin), 2) ~= 0)
+      fprintf('ERROR: expecting an even number of input arguments (e.g. (''argument_name'', ''argument_value'') - exit\n');
+      o_inputError = 1;
+      return
+   else
+      for id = 1:2:length(a_varargin)
+         if (strcmpi(a_varargin{id}, 'inputDataDir'))
+            g_cogeoac_dirInputNcFiles = a_varargin{id+1};
+         elseif (strcmpi(a_varargin{id}, 'inputMinMaxDir'))
+            g_cogeoac_dirInputMinMaxFiles = a_varargin{id+1};
+         elseif (strcmpi(a_varargin{id}, 'inputDataDoi'))
+            g_cogeoac_inputDataDoi = a_varargin{id+1};
+         elseif (strcmpi(a_varargin{id}, 'csvOutputDir'))
+            g_cogeoac_dirOutputCsvFiles = a_varargin{id+1};
+         elseif (strcmpi(a_varargin{id}, 'logDir'))
+            g_cogeoac_dirLogFile = a_varargin{id+1};
+         elseif (strcmpi(a_varargin{id}, 'xmlReportDir'))
+            g_cogeoac_dirOutputXmlFile = a_varargin{id+1};
+         elseif (strcmpi(a_varargin{id}, 'xmlReportName'))
+            g_cogeoac_xmlReportFileName = a_varargin{id+1};
+         elseif (strcmpi(a_varargin{id}, 'generateOutputAuditFlag'))
+            g_cogeoac_generateOutputAuditFlag = str2double(a_varargin{id+1});
+         elseif (strcmpi(a_varargin{id}, 'auditOutputDir'))
+            g_cogeoac_dirOutputAuditFiles = a_varargin{id+1};
+         else
+            fprintf('WARNING: unexpected input argument (%s) - ignored\n', a_varargin{id});
+         end
+      end
+   end
+end
+
+% check the xml report file name consistency
+if (~isempty(g_cogeoac_xmlReportFileName))
+   if (length(g_cogeoac_xmlReportFileName) < 29)
+      fprintf('WARNING: inconsistent xml report file name (%s) expecting coXXXXXX_yyyymmddTHHMMSSZ[_PID].xml - ignored\n', g_cogeoac_xmlReportFileName);
+      g_cogeoac_xmlReportFileName = [];
+   end
+end
+
+return
+
+% ------------------------------------------------------------------------------
+% Finalize the XML report.
+%
+% SYNTAX :
+%  [o_status] = finalize_xml_report(a_ticStartTime, a_logFileName, a_error)
+%
+% INPUT PARAMETERS :
+%   a_ticStartTime : identifier for the "tic" command
+%   a_logFileName  : log file path name of the run
+%   a_error        : Matlab error
+%
+% OUTPUT PARAMETERS :
+%   o_status : final status of the run
+%
+% EXAMPLES :
+%
+% SEE ALSO :
+% AUTHOR : Jean-Philippe Rannou (Capgemini) (jean.philippe.rannou@partenaire-exterieur.ifremer.fr)
+% ------------------------------------------------------------------------------
+% RELEASES :
+%   11/25/2024 - RNU - creation
+% ------------------------------------------------------------------------------
+function [o_status] = finalize_xml_report(a_ticStartTime, a_logFileName, a_error)
+
+% DOM node of XML report
+global g_cogeoac_xmlReportDOMNode;
+
+% number of input files processed
+global g_cogeoac_nbInputFiles;
+
+% number of output files generated
+global g_cogeoac_nbOutputFiles;
+global g_cogeoac_nbOutputFilesLite;
+global g_cogeoac_nbOutputFilesMat;
+global g_cogeoac_nbOutputProfMatExpected;
+global g_cogeoac_nbOutputProfMat;
+
+% user report files
+global g_cogeoac_reportFile;
+global g_cogeoac_reportFileLite;
+
+% excluded profile info
+global g_cogeoac_excluded_prof;
+
+% program version
+global g_cogeoac_generateEasyOneArgoCoreVersion;
+
+% date of the run
+global g_cogeoac_nowUtcStr;
+
+
+% initalize final status
+o_status = 'ok';
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% finalize the xml report
+
+docNode = g_cogeoac_xmlReportDOMNode;
+docRootNode = getDocumentElement(docNode);
+
+nbInputFiles = g_cogeoac_nbInputFiles;
+nbOutputFiles = g_cogeoac_nbOutputFiles;
+nbOutputFilesLite = g_cogeoac_nbOutputFilesLite;
+nbOutputFilesMat = g_cogeoac_nbOutputFilesMat;
+nbOutputProfMatExpected = g_cogeoac_nbOutputProfMatExpected;
+nbOutputProfMat = g_cogeoac_nbOutputProfMat;
+
+% retrieve information from the log file
+[infoMsg, warningMsg, errorMsg] = parse_log_file(a_logFileName);
+
+error = a_error;
+
+duration = format_time(toc(a_ticStartTime)/3600);
+
+newChild = createElement(docNode, 'Nb_input_nc_files');
+textNode = num2str(nbInputFiles);
+appendChild(newChild, createTextNode(docNode, textNode));
+appendChild(docRootNode, newChild);
+
+newChild = createElement(docNode, 'Nb_output_csv_files_EasyOneArgoTS');
+textNode = num2str(nbOutputFiles);
+appendChild(newChild, createTextNode(docNode, textNode));
+appendChild(docRootNode, newChild);
+
+newChild = createElement(docNode, 'Nb_output_csv_files_EasyOneArgoTSLite');
+textNode = num2str(nbOutputFilesLite);
+appendChild(newChild, createTextNode(docNode, textNode));
+appendChild(docRootNode, newChild);
+
+newChild = createElement(docNode, 'Nb_output_mat_files_EasyOneArgoTSLite_audit');
+textNode = num2str(nbOutputFilesMat);
+appendChild(newChild, createTextNode(docNode, textNode));
+appendChild(docRootNode, newChild);
+
+newChild = createElement(docNode, 'Nb_output_mat_profiles_EasyOneArgoTSLite_audit');
+textNode = num2str(nbOutputProfMat);
+appendChild(newChild, createTextNode(docNode, textNode));
+appendChild(docRootNode, newChild);
+
+if (~isempty(infoMsg))
+   for idMsg = 1:length(infoMsg)
+      newChild = createElement(docNode, 'info');
+      textNode = infoMsg{idMsg};
+      appendChild(newChild, createTextNode(docNode, textNode));
+      appendChild(docRootNode, newChild);
+   end
+end
+
+if (~isempty(warningMsg))
+   for idMsg = 1:length(warningMsg)
+      newChild = createElement(docNode, 'warning');
+      textNode = warningMsg{idMsg};
+      appendChild(newChild, createTextNode(docNode, textNode));
+      appendChild(docRootNode, newChild);
+   end
+end
+
+if (~isempty(errorMsg))
+   for idMsg = 1:length(errorMsg)
+      newChild = createElement(docNode, 'error');
+      textNode = errorMsg{idMsg};
+      appendChild(newChild, createTextNode(docNode, textNode));
+      appendChild(docRootNode, newChild);
+   end
+   o_status = 'nok';
+end
+
+% add matlab error
+if (~isempty(error))
+   o_status = 'nok';
+
+   newChild = createElement(docNode, 'matlab_error');
+
+   for idE = 1:length(error)
+      errStruct = error(idE);
+
+      newChildBis = createElement(docNode, 'error_message');
+      textNode = regexprep(errStruct.message, char(10), ': ');
+      appendChild(newChildBis, createTextNode(docNode, textNode));
+      appendChild(newChild, newChildBis);
+
+      for idS = 1:size(errStruct.stack, 1)
+         newChildBis = createElement(docNode, 'stack_line');
+         textNode = sprintf('Line: %3d File: %s (func: %s)', ...
+            errStruct.stack(idS). line, ...
+            errStruct.stack(idS). file, ...
+            errStruct.stack(idS). name);
+         appendChild(newChildBis, createTextNode(docNode, textNode));
+         appendChild(newChild, newChildBis);
+      end
+   end
+   appendChild(docRootNode, newChild);
+end
+
+newChild = createElement(docNode, 'duration');
+textNode = duration;
+appendChild(newChild, createTextNode(docNode, textNode));
+appendChild(docRootNode, newChild);
+
+newChild = createElement(docNode, 'status');
+textNode = o_status;
+appendChild(newChild, createTextNode(docNode, textNode));
+appendChild(docRootNode, newChild);
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% create user reports
+
+% text on excluded profile information
+exludedProfStr = [];
+
+if (~isempty(g_cogeoac_excluded_prof))
+   [~, idSort] = sort([g_cogeoac_excluded_prof(:, 3)]);
+   g_cogeoac_excluded_prof = g_cogeoac_excluded_prof(idSort, :);
+end
+
+exludedProfStr{end+1} = 'List of profiles excluded from EasyOneArgo dataset (from https://data-argo.ifremer.fr/etc/Report_ObjectiveAnalysisWarning/csv_drift/)';
+exludedProfStr{end+1} = 'DAC;WMO;PI;First cycle;Last cycle';
+for idL = 1:size(g_cogeoac_excluded_prof, 1)
+   exludedProfStr{end+1} = sprintf('%s;%d;%s;%d;%d', ...
+      g_cogeoac_excluded_prof{idL, 3}, ...
+      g_cogeoac_excluded_prof{idL, 1}, ...
+      g_cogeoac_excluded_prof{idL, 4}, ...
+      g_cogeoac_excluded_prof{idL, 5}, ...
+      g_cogeoac_excluded_prof{idL, 6});
+end
+
+fId = fopen(g_cogeoac_reportFile, 'wt');
+if (fId == -1)
+   fprintf('ERROR: Error while creating file : %s\n', g_cogeoac_reportFile);
+   return
+end
+
+fprintf(fId, 'Generator version number: %s\n', g_cogeoac_generateEasyOneArgoCoreVersion);
+fprintf(fId, 'Run date: %s\n', g_cogeoac_nowUtcStr);
+fprintf(fId, 'Run time: %s\n', duration);
+fprintf(fId, 'Number of input Argo single-cycle files: %d\n', nbInputFiles);
+fprintf(fId, 'Number of output CSV files in the EasyOneArgoTS dataset: %d\n\n', nbOutputFiles);
+
+fprintf(fId, '%s\n', exludedProfStr{:});
+
+fclose(fId);
+
+fId = fopen(g_cogeoac_reportFileLite, 'wt');
+if (fId == -1)
+   fprintf('ERROR: Error while creating file : %s\n', g_cogeoac_reportFileLite);
+   return
+end
+
+fprintf(fId, 'Generator version number: %s\n', g_cogeoac_generateEasyOneArgoCoreVersion);
+fprintf(fId, 'Run date: %s\n', g_cogeoac_nowUtcStr);
+fprintf(fId, 'Run time: %s\n', duration);
+fprintf(fId, 'Number of input Argo single-cycle files: %d\n', nbInputFiles);
+fprintf(fId, 'Number of output CSV files in the EasyOneArgoTSLite dataset: %d\n\n', nbOutputFilesLite);
+
+fprintf(fId, '%s\n', exludedProfStr{:});
+
+fclose(fId);
+
+return
+
+% ------------------------------------------------------------------------------
+% Add institution to data center code.
+%
+% SYNTAX :
+%  [o_extendedDataCenter] = get_extended_data_center(a_dataCentre)
+%
+% INPUT PARAMETERS :
+%   a_dataCentre : data centre code
+%
+% OUTPUT PARAMETERS :
+%   o_extendedDataCenter : extended data centre
+%
+% EXAMPLES :
+%
+% SEE ALSO :
+% AUTHOR : Jean-Philippe Rannou (Capgemini) (jean.philippe.rannou@partenaire-exterieur.ifremer.fr)
+% ------------------------------------------------------------------------------
+% RELEASES :
+%   11/21/2025 - RNU - creation
+% ------------------------------------------------------------------------------
+function [o_extendedDataCenter] = get_extended_data_center(a_dataCentre)
+
+o_extendedDataCenter = ' ';
+
+
+switch (a_dataCentre)
+
+   case 'AO'
+      o_extendedDataCenter = 'AOML, USA';
+   case 'BO'
+      o_extendedDataCenter = 'BODC, United Kingdom';
+   case 'CI'
+      o_extendedDataCenter = 'Institute of Ocean Sciences, Canada';
+   case 'CS'
+      o_extendedDataCenter = 'CSIRO, Australia';
+   case 'EA'
+      o_extendedDataCenter = 'Euro-Argo, Europe';
+   case 'GE'
+      o_extendedDataCenter = 'BSH, Germany';
+   case 'GT'
+      o_extendedDataCenter = 'GTS : used for data coming from WMO GTS network';
+   case 'HZ'
+      o_extendedDataCenter = 'CSIO, China Second Institute of Oceanography';
+   case 'IF'
+      o_extendedDataCenter = 'Ifremer, France';
+   case 'IN'
+      o_extendedDataCenter = 'INCOIS, India';
+   case 'JA'
+      o_extendedDataCenter = 'JMA, Japan';
+   case 'JM'
+      o_extendedDataCenter = 'Jamstec, Japan';
+   case 'KM'
+      o_extendedDataCenter = 'KMA, Korea';
+   case 'KO'
+      o_extendedDataCenter = 'KORDI, Korea';
+   case 'LV'
+      o_extendedDataCenter = 'Laboratoire OcC)anographique de Villefranche, Sorbonne University';
+   case 'MB'
+      o_extendedDataCenter = 'MBARI, USA';
+   case 'ME'
+      o_extendedDataCenter = 'MEDS, Canada';
+   case 'NA'
+      o_extendedDataCenter = 'NAVO, USA';
+   case 'NM'
+      o_extendedDataCenter = 'NMDIS, China';
+   case 'PL'
+      o_extendedDataCenter = 'IOPAN, Institute of Oceanology Polish Academy of Science';
+   case 'PM'
+      o_extendedDataCenter = 'PMEL, USA';
+   case 'RU'
+      o_extendedDataCenter = 'Russia';
+   case 'SI'
+      o_extendedDataCenter = 'SIO, Scripps, USA';
+   case 'SP'
+      o_extendedDataCenter = 'Spain';
+   case 'UW'
+      o_extendedDataCenter = 'University of Washington, USA';
+   case 'VL'
+      o_extendedDataCenter = 'Far Eastern Regional Hydrometeorological Research Institute of Vladivostock, Russia';
+   case 'WH'
+      o_extendedDataCenter = 'Woods Hole Oceanographic Institution, USA';
+
+   otherwise
+      fprintf('ERROR: ''%s'' data centre is not managed in get_extended_data_center\n', a_dataCentre);
+      return
+end
+
+o_extendedDataCenter = [a_dataCentre ' (' o_extendedDataCenter ')'];
 
 return
 
@@ -1715,23 +2358,30 @@ if (exist(a_ncPathFileName, 'file') == 2)
       return
    end
 
-   % retrieve the list of variables that are present in the file
-   varFlagList = vars_are_present_dec_argo(fCdf, a_wantedVars);
+   try
 
-   % retrieve variables from NetCDF file
-   for idVar = 1:length(a_wantedVars)
-      if (varFlagList(idVar) == 1)
-         varValue = netcdf.getVar(fCdf, netcdf.inqVarID(fCdf, a_wantedVars{idVar}));
-         o_ncData = [o_ncData {a_wantedVars{idVar}} {varValue}];
-      else
-         %          fprintf('WARNING: Variable %s not present in file : %s\n', ...
-         %             varName, a_ncPathFileName);
-         o_ncData = [o_ncData {a_wantedVars{idVar}} {''}];
+      % retrieve the list of variables that are present in the file
+      varFlagList = vars_are_present_dec_argo(fCdf, a_wantedVars);
+
+      % retrieve variables from NetCDF file
+      for idVar = 1:length(a_wantedVars)
+         if (varFlagList(idVar) == 1)
+            varValue = netcdf.getVar(fCdf, netcdf.inqVarID(fCdf, a_wantedVars{idVar}));
+            o_ncData = [o_ncData {a_wantedVars{idVar}} {varValue}];
+         else
+            %          fprintf('WARNING: Variable %s not present in file : %s\n', ...
+            %             varName, a_ncPathFileName);
+            o_ncData = [o_ncData {a_wantedVars{idVar}} {''}];
+         end
+
       end
 
-   end
+      netcdf.close(fCdf);
 
-   netcdf.close(fCdf);
+   catch MException
+      netcdf.close(fCdf);
+      rethrow(MException)
+   end
 end
 
 return
@@ -1805,356 +2455,6 @@ idVal = find(strcmp(a_dataName, a_dataList(1:2:end)) == 1, 1);
 if (~isempty(idVal))
    o_dataValues = a_dataList{2*idVal};
 end
-
-return
-
-% ------------------------------------------------------------------------------
-% Initialize XML report.
-%
-% SYNTAX :
-%  init_xml_report(a_time)
-%
-% INPUT PARAMETERS :
-%   a_time : start date of the run ('yyyymmddTHHMMSS' format)
-%
-% OUTPUT PARAMETERS :
-%
-% EXAMPLES :
-%
-% SEE ALSO :
-% AUTHOR : Jean-Philippe Rannou (Capgemini) (jean.philippe.rannou@partenaire-exterieur.ifremer.fr)
-% ------------------------------------------------------------------------------
-% RELEASES :
-%   11/25/2024 - RNU - creation
-% ------------------------------------------------------------------------------
-function init_xml_report(a_time)
-
-% DOM node of XML report
-global g_cogeoac_xmlReportDOMNode;
-
-% program version
-global g_cogeoac_generateEasyOneArgoCoreVersion;
-
-
-% initialize XML report
-docNode = com.mathworks.xml.XMLUtils.createDocument('coriolis_function_report');
-docRootNode = docNode.getDocumentElement;
-
-newChild = docNode.createElement('function');
-newChild.appendChild(docNode.createTextNode('CO-05-08-16-01'));
-docRootNode.appendChild(newChild);
-
-newChild = docNode.createElement('comment');
-newChild.appendChild(docNode.createTextNode('Argo Coriolis Easy OneArgo core generator (generate_easy_one_argo_core)'));
-docRootNode.appendChild(newChild);
-
-newChild = docNode.createElement('tool_version');
-newChild.appendChild(docNode.createTextNode(g_cogeoac_generateEasyOneArgoCoreVersion));
-docRootNode.appendChild(newChild);
-
-newChild = docNode.createElement('date');
-newChild.appendChild(docNode.createTextNode(datestr(datenum(a_time, 'yyyymmddTHHMMSSZ'), 'dd/mm/yyyy HH:MM:SS')));
-docRootNode.appendChild(newChild);
-
-g_cogeoac_xmlReportDOMNode = docNode;
-
-return
-
-% ------------------------------------------------------------------------------
-% Parse input parameters.
-%
-% SYNTAX :
-%  [o_inputError] = parse_input_param(a_varargin)
-%
-% INPUT PARAMETERS :
-%   a_varargin : input parameters
-%
-% OUTPUT PARAMETERS :
-%   o_inputError : input error flag
-%
-% EXAMPLES :
-%
-% SEE ALSO :
-% AUTHOR : Jean-Philippe Rannou (Capgemini) (jean.philippe.rannou@partenaire-exterieur.ifremer.fr)
-% ------------------------------------------------------------------------------
-% RELEASES :
-%   11/25/2024 - RNU - creation
-% ------------------------------------------------------------------------------
-function [o_inputError] = parse_input_param(a_varargin)
-
-% output parameters initialization
-o_inputError = 0;
-
-global g_cogeoac_dirInputNcFiles;
-global g_cogeoac_inputDataDoi;
-global g_cogeoac_dirOutputCsvFiles;
-global g_cogeoac_dirLogFile;
-global g_cogeoac_dirOutputXmlFile;
-global g_cogeoac_xmlReportFileName;
-global g_cogeoac_generateOutputMatFlag;
-global g_cogeoac_dirOutputMatFiles;
-
-g_cogeoac_dirInputNcFiles = [];
-g_cogeoac_inputDataDoi = [];
-g_cogeoac_dirOutputCsvFiles = [];
-g_cogeoac_dirLogFile = [];
-g_cogeoac_dirOutputXmlFile = [];
-g_cogeoac_xmlReportFileName = [];
-g_cogeoac_generateOutputMatFlag = [];
-g_cogeoac_dirOutputMatFiles = [];
-
-
-% ignore empty input parameters
-idDel = [];
-for id = 1:length(a_varargin)
-   if (isempty(a_varargin{id}))
-      idDel = [idDel id];
-   end
-end
-a_varargin(idDel) = [];
-
-% check input parameters
-if (~isempty(a_varargin))
-   if (rem(length(a_varargin), 2) ~= 0)
-      fprintf('ERROR: expecting an even number of input arguments (e.g. (''argument_name'', ''argument_value'') - exit\n');
-      o_inputError = 1;
-      return
-   else
-      for id = 1:2:length(a_varargin)
-         if (strcmpi(a_varargin{id}, 'inputDataDir'))
-            g_cogeoac_dirInputNcFiles = a_varargin{id+1};
-         elseif (strcmpi(a_varargin{id}, 'inputDataDoi'))
-            g_cogeoac_inputDataDoi = a_varargin{id+1};
-         elseif (strcmpi(a_varargin{id}, 'csvOutputDir'))
-            g_cogeoac_dirOutputCsvFiles = a_varargin{id+1};
-         elseif (strcmpi(a_varargin{id}, 'logDir'))
-            g_cogeoac_dirLogFile = a_varargin{id+1};
-         elseif (strcmpi(a_varargin{id}, 'xmlReportDir'))
-            g_cogeoac_dirOutputXmlFile = a_varargin{id+1};
-         elseif (strcmpi(a_varargin{id}, 'xmlReportName'))
-            g_cogeoac_xmlReportFileName = a_varargin{id+1};
-         elseif (strcmpi(a_varargin{id}, 'generateOutputMatFlag'))
-            g_cogeoac_generateOutputMatFlag = str2double(a_varargin{id+1});
-         elseif (strcmpi(a_varargin{id}, 'matOutputDir'))
-            g_cogeoac_dirOutputMatFiles = a_varargin{id+1};
-         else
-            fprintf('WARNING: unexpected input argument (%s) - ignored\n', a_varargin{id});
-         end
-      end
-   end
-end
-
-% check the xml report file name consistency
-if (~isempty(g_cogeoac_xmlReportFileName))
-   if (length(g_cogeoac_xmlReportFileName) < 29)
-      fprintf('WARNING: inconsistent xml report file name (%s) expecting coXXXXXX_yyyymmddTHHMMSSZ[_PID].xml - ignored\n', g_cogeoac_xmlReportFileName);
-      g_cogeoac_xmlReportFileName = [];
-   end
-end
-
-return
-
-% ------------------------------------------------------------------------------
-% Finalize the XML report.
-%
-% SYNTAX :
-%  [o_status] = finalize_xml_report(a_ticStartTime, a_logFileName, a_error)
-%
-% INPUT PARAMETERS :
-%   a_ticStartTime : identifier for the "tic" command
-%   a_logFileName  : log file path name of the run
-%   a_error        : Matlab error
-%
-% OUTPUT PARAMETERS :
-%   o_status : final status of the run
-%
-% EXAMPLES :
-%
-% SEE ALSO :
-% AUTHOR : Jean-Philippe Rannou (Capgemini) (jean.philippe.rannou@partenaire-exterieur.ifremer.fr)
-% ------------------------------------------------------------------------------
-% RELEASES :
-%   11/25/2024 - RNU - creation
-% ------------------------------------------------------------------------------
-function [o_status] = finalize_xml_report(a_ticStartTime, a_logFileName, a_error)
-
-% DOM node of XML report
-global g_cogeoac_xmlReportDOMNode;
-
-% number of input files processed
-global g_cogeoac_nbInputFiles;
-
-% number of output files generated
-global g_cogeoac_nbOutputFiles;
-global g_cogeoac_nbOutputFilesLite;
-global g_cogeoac_nbOutputFilesMat;
-global g_cogeoac_nbOutputProfMatExpected;
-global g_cogeoac_nbOutputProfMat;
-
-% user report files
-global g_cogeoac_reportFile;
-global g_cogeoac_reportFileLite;
-
-% program version
-global g_cogeoac_generateEasyOneArgoCoreVersion;
-
-% date of the run
-global g_cogeoac_nowUtcStr;
-
-
-% initalize final status
-o_status = 'ok';
-
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-% finalize the xml report
-
-docNode = g_cogeoac_xmlReportDOMNode;
-docRootNode = docNode.getDocumentElement;
-
-nbInputFiles = g_cogeoac_nbInputFiles;
-nbOutputFiles = g_cogeoac_nbOutputFiles;
-nbOutputFilesLite = g_cogeoac_nbOutputFilesLite;
-nbOutputFilesMat = g_cogeoac_nbOutputFilesMat;
-nbOutputProfMatExpected = g_cogeoac_nbOutputProfMatExpected;
-nbOutputProfMat = g_cogeoac_nbOutputProfMat;
-
-% retrieve information from the log file
-[infoMsg, warningMsg, errorMsg] = parse_log_file(a_logFileName);
-
-error = a_error;
-
-duration = format_time(toc(a_ticStartTime)/3600);
-
-newChild = docNode.createElement('Nb_input_nc_files');
-% textNode = ['Number of input Argo profile NetCDF files: ' num2str(nbInputFiles)];
-textNode = num2str(nbInputFiles);
-newChild.appendChild(docNode.createTextNode(textNode));
-docRootNode.appendChild(newChild);
-
-newChild = docNode.createElement('Nb_output_csv_files_EasyOneArgoTS');
-% textNode = ['Number of output CSV files in the EasyOneArgoTS dataset: ' num2str(nbOutputFiles)];
-textNode = num2str(nbOutputFiles);
-newChild.appendChild(docNode.createTextNode(textNode));
-docRootNode.appendChild(newChild);
-
-newChild = docNode.createElement('Nb_output_csv_files_EasyOneArgoTSLite');
-% textNode = ['Number of output CSV files in the EasyOneArgoTSLite dataset: ' num2str(nbOutputFilesLite)];
-textNode = num2str(nbOutputFilesLite);
-newChild.appendChild(docNode.createTextNode(textNode));
-docRootNode.appendChild(newChild);
-
-newChild = docNode.createElement('Nb_output_mat_files_EasyOneArgoTSLite_audit');
-% textNode = ['Number of output mat files in the EasyOneArgoTSLite audit dataset: ' num2str(nbOutputFilesMat)];
-textNode = num2str(nbOutputFilesMat);
-newChild.appendChild(docNode.createTextNode(textNode));
-docRootNode.appendChild(newChild);
-
-% newChild = docNode.createElement('Nb_output_mat_profiles_expected_EasyOneArgoTSLite_audit');
-% newChild.appendChild(docNode.createTextNode(num2str(nbOutputProfMatExpected)));
-% docRootNode.appendChild(newChild);
-
-newChild = docNode.createElement('Nb_output_mat_profiles_EasyOneArgoTSLite_audit');
-% textNode = ['Number of output profiles in the EasyOneArgoTSLite audit dataset: ' num2str(nbOutputProfMat)];
-textNode = num2str(nbOutputProfMat);
-newChild.appendChild(docNode.createTextNode(textNode));
-docRootNode.appendChild(newChild);
-
-if (~isempty(infoMsg))
-
-   for idMsg = 1:length(infoMsg)
-      newChild = docNode.createElement('info');
-      textNode = infoMsg{idMsg};
-      newChild.appendChild(docNode.createTextNode(textNode));
-      docRootNode.appendChild(newChild);
-   end
-end
-
-if (~isempty(warningMsg))
-
-   for idMsg = 1:length(warningMsg)
-      newChild = docNode.createElement('warning');
-      textNode = warningMsg{idMsg};
-      newChild.appendChild(docNode.createTextNode(textNode));
-      docRootNode.appendChild(newChild);
-   end
-end
-
-if (~isempty(errorMsg))
-
-   for idMsg = 1:length(errorMsg)
-      newChild = docNode.createElement('error');
-      textNode = errorMsg{idMsg};
-      newChild.appendChild(docNode.createTextNode(textNode));
-      docRootNode.appendChild(newChild);
-   end
-   o_status = 'nok';
-end
-
-% add matlab error
-if (~isempty(error))
-   o_status = 'nok';
-
-   newChild = docNode.createElement('matlab_error');
-
-   for idE = 1:length(error)
-      errStruct = error(idE);
-
-      newChildBis = docNode.createElement('error_message');
-      textNode = regexprep(errStruct.message, char(10), ': ');
-      newChildBis.appendChild(docNode.createTextNode(textNode));
-      newChild.appendChild(newChildBis);
-
-      for idS = 1:size(errStruct.stack, 1)
-         newChildBis = docNode.createElement('stack_line');
-         textNode = sprintf('Line: %3d File: %s (func: %s)', ...
-            errStruct.stack(idS). line, ...
-            errStruct.stack(idS). file, ...
-            errStruct.stack(idS). name);
-         newChildBis.appendChild(docNode.createTextNode(textNode));
-         newChild.appendChild(newChildBis);
-      end
-   end
-   docRootNode.appendChild(newChild);
-end
-
-newChild = docNode.createElement('duration');
-newChild.appendChild(docNode.createTextNode(duration));
-docRootNode.appendChild(newChild);
-
-newChild = docNode.createElement('status');
-newChild.appendChild(docNode.createTextNode(o_status));
-docRootNode.appendChild(newChild);
-
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-% create user reports
-
-fId = fopen(g_cogeoac_reportFile, 'wt');
-if (fId == -1)
-   fprintf('ERROR: Error while creating file : %s\n', g_cogeoac_reportFile);
-   return
-end
-
-fprintf(fId, 'Generator version number: %s\n', g_cogeoac_generateEasyOneArgoCoreVersion);
-fprintf(fId, 'Run date: %s\n', g_cogeoac_nowUtcStr);
-fprintf(fId, 'Run time: %s\n', duration);
-fprintf(fId, 'Number of input Argo profile NetCDF files: %d\n', nbInputFiles);
-fprintf(fId, 'Number of output CSV files in the EasyOneArgoTS dataset: %d\n', nbOutputFiles);
-
-fclose(fId);
-
-fId = fopen(g_cogeoac_reportFileLite, 'wt');
-if (fId == -1)
-   fprintf('ERROR: Error while creating file : %s\n', g_cogeoac_reportFileLite);
-   return
-end
-
-fprintf(fId, 'Generator version number: %s\n', g_cogeoac_generateEasyOneArgoCoreVersion);
-fprintf(fId, 'Run date: %s\n', g_cogeoac_nowUtcStr);
-fprintf(fId, 'Run time: %s\n', duration);
-fprintf(fId, 'Number of input Argo profile NetCDF files: %d\n', nbInputFiles);
-fprintf(fId, 'Number of output CSV files in the EasyOneArgoTSLite dataset: %d\n', nbOutputFilesLite);
-
-fclose(fId);
 
 return
 
